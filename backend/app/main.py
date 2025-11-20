@@ -10,10 +10,12 @@ from typing import List, Optional
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 PROJECTS_DIR = DATA_DIR / "projects"
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "static"
 METADATA_FILENAME = "metadata.json"
 
 app = FastAPI(title="Test Results Dashboard API", openapi_url="/api/openapi.json")
@@ -181,6 +183,10 @@ async def serve_report(project: str, path: str = "index.html") -> FileResponse:
     return FileResponse(safe_path)
 
 
-@app.get("/")
-async def root() -> dict[str, str]:
-    return {"status": "ok", "message": "Test Results Dashboard API"}
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+else:
+
+    @app.get("/")
+    async def root() -> dict[str, str]:
+        return {"status": "ok", "message": "Test Results Dashboard API"}
