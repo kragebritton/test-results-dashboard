@@ -14,11 +14,11 @@ A small FastAPI + React application for ingesting and browsing Allure reports by
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uv sync
+uv run uvicorn app.main:app --reload --port 8000
 ```
+
+The backend now uses [uv](https://github.com/astral-sh/uv) with dependencies declared in `backend/pyproject.toml` and resolved via `uv lock`/`uv sync`.
 
 ### Frontend (Vite + React)
 

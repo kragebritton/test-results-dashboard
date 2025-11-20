@@ -1,0 +1,15 @@
+[project]
+name = "test-results-dashboard-backend"
+version = "0.1.0"
+description = "FastAPI backend for the Test Results Dashboard application."
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi==0.110.3",
+    "uvicorn[standard]==0.29.0",
+    "python-multipart==0.0.9",
+    "pydantic==2.7.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
