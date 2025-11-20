@@ -57,3 +57,19 @@ Key options:
 - `--project` / `-p`: The project name that should receive the upload.
 - `--api-url`: Base API URL for the dashboard backend (defaults to `http://localhost:8000/api`).
 - `--timeout`: HTTP timeout in seconds (defaults to `30`).
+
+### Running with Docker
+
+Build the image (frontend and backend are bundled together) from the repository root:
+
+```bash
+docker build -t test-results-dashboard .
+```
+
+Run the container, exposing the API and UI on port 8000 and persisting uploads to a host directory:
+
+```bash
+docker run --rm -p 8000:8000 -v $PWD/data:/app/backend/data test-results-dashboard
+```
+
+The UI is available at `http://localhost:8000`, and API requests are served from `http://localhost:8000/api`.
