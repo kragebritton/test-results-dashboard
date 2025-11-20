@@ -72,4 +72,12 @@ Run the container, exposing the API and UI on port 8000 and persisting uploads t
 docker run --rm -p 8000:8000 -v $PWD/data:/app/backend/data test-results-dashboard
 ```
 
-The UI is available at `http://localhost:8000`, and API requests are served from `http://localhost:8000/api`.
+If you want to run the container on a different host port, change the left-hand side of the port mapping. The first port is the
+host-facing port, and the second port must stay `8000` because the container listens there:
+
+```bash
+# expose the service on http://localhost:9000 while keeping the container port at 8000
+docker run --rm -p 9000:8000 -v $PWD/data:/app/backend/data test-results-dashboard
+```
+
+The UI is available at `http://localhost:<host-port>`, and API requests are served from `http://localhost:<host-port>/api`.
