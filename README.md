@@ -41,3 +41,19 @@ curl -X POST "http://localhost:8000/api/projects/my-project/upload" \
 ```
 
 After the upload completes, browse to the front-end, select the project, and the latest Allure report will appear in the embedded viewer.
+
+### CI-friendly CLI uploader (Typer + uv)
+
+You can automate uploads from CI/CD using the provided Typer-based CLI in the `cli` directory. It uses [uv](https://github.com/astral-sh/uv) for dependency management and can package either an existing report zip or a report directory before sending it to the API.
+
+```bash
+cd cli
+uv run trd-upload upload ./allure-report --project my-project --api-url http://localhost:8000/api
+```
+
+Key options:
+
+- `report_path` (argument): Path to an Allure report directory or a pre-zipped archive.
+- `--project` / `-p`: The project name that should receive the upload.
+- `--api-url`: Base API URL for the dashboard backend (defaults to `http://localhost:8000/api`).
+- `--timeout`: HTTP timeout in seconds (defaults to `30`).
