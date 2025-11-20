@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -97,6 +97,29 @@ async def project_details(project: str) -> dict[str, object]:
     }
 
 
+def _safe_extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
+    """Safely extract a ZIP archive without allowing path traversal."""
+    base = target_dir.resolve()
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    for member in archive.infolist():
+        member_path = Path(member.filename)
+        if member_path.is_absolute() or ".." in member_path.parts:
+            raise HTTPException(status_code=400, detail="Archive contains unsafe paths.")
+
+        destination = (base / member_path).resolve()
+        if base not in destination.parents and destination != base:
+            raise HTTPException(status_code=400, detail="Archive contains unsafe paths.")
+
+        if member.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
+            continue
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(member) as source, destination.open("wb") as target:
+            shutil.copyfileobj(source, target)
+
+
 def _extract_upload(project: str, upload: UploadFile, build_id: str) -> Path:
     project_dir = PROJECTS_DIR / project
     history_dir = project_dir / "history"
@@ -111,43 +134,42 @@ def _extract_upload(project: str, upload: UploadFile, build_id: str) -> Path:
         with tmp_path.open("wb") as buffer:
             shutil.copyfileobj(upload.file, buffer)
 
-        with tempfile.TemporaryDirectory() as extract_dir:
-            with zipfile.ZipFile(tmp_path, "r") as archive:
-                archive.extractall(extract_dir)
+        if not zipfile.is_zipfile(tmp_path):
+            raise HTTPException(status_code=400, detail="Upload must be a valid ZIP archive.")
 
-            shutil.copytree(extract_dir, target_dir)
+        with zipfile.ZipFile(tmp_path, "r") as archive:
+            _safe_extract_zip(archive, target_dir)
 
     return target_dir
 
 
 @app.post("/api/projects/{project}/upload")
-async def upload_results(project: str, background_tasks: BackgroundTasks, file: UploadFile = File(...)) -> dict[str, str]:
+async def upload_results(project: str, file: UploadFile = File(...)) -> dict[str, str]:
     ensure_directories()
     if file.content_type not in {"application/zip", "application/x-zip-compressed", "multipart/form-data"}:
         raise HTTPException(status_code=400, detail="Upload must be a zip archive containing an Allure report.")
 
     build_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
 
-    def process_upload() -> None:
-        try:
-            report_dir = _extract_upload(project, file, build_id)
-            index_path = report_dir / "index.html"
-            if not index_path.exists():
-                raise HTTPException(
-                    status_code=400,
-                    detail="Uploaded archive does not contain an Allure report (index.html missing).",
-                )
+    try:
+        report_dir = _extract_upload(project, file, build_id)
+        index_path = report_dir / "index.html"
+        if not index_path.exists():
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded archive does not contain an Allure report (index.html missing).",
+            )
 
-            metadata = ProjectMetadata.load(project)
-            metadata.latest = build_id
-            metadata.history.append(HistoryEntry(build_id=build_id, uploaded_at=datetime.utcnow()))
-            metadata.save()
-        finally:
-            file.file.close()
+        metadata = ProjectMetadata.load(project)
+        metadata.latest = build_id
+        metadata.history.append(HistoryEntry(build_id=build_id, uploaded_at=datetime.utcnow()))
+        metadata.save()
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Upload must be a valid ZIP archive.")
+    finally:
+        file.file.close()
 
-    background_tasks.add_task(process_upload)
-
-    return {"message": "Upload accepted", "build_id": build_id}
+    return {"message": "Upload processed", "build_id": build_id}
 
 
 def _safe_join(base: Path, path: Path) -> Path:
