@@ -180,7 +180,7 @@ async def project_details(project: str) -> dict[str, object]:
     }
 
 
-def _extract_upload(project: str, upload: UploadFile, build_id: str) -> Path:
+def _extract_upload(project: str, upload_content: bytes, build_id: str) -> Path:
     project_dir = PROJECTS_DIR / project
     history_dir = project_dir / "history"
     history_dir.mkdir(parents=True, exist_ok=True)
@@ -192,7 +192,7 @@ def _extract_upload(project: str, upload: UploadFile, build_id: str) -> Path:
     with tempfile.TemporaryDirectory() as temp_dir:
         tmp_path = Path(temp_dir) / "upload.zip"
         with tmp_path.open("wb") as buffer:
-            shutil.copyfileobj(upload.file, buffer)
+            buffer.write(upload_content)
 
         with tempfile.TemporaryDirectory() as extract_dir:
             with zipfile.ZipFile(tmp_path, "r") as archive:
@@ -211,9 +211,11 @@ async def upload_results(project: str, background_tasks: BackgroundTasks, file: 
 
     build_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
 
+    file_content = await file.read()
+
     def process_upload() -> None:
         try:
-            report_dir = _extract_upload(project, file, build_id)
+            report_dir = _extract_upload(project, file_content, build_id)
             index_path = report_dir / "index.html"
             if not index_path.exists():
                 raise HTTPException(
