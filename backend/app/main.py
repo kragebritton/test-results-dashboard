@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import zipfile
@@ -17,6 +18,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 PROJECTS_DIR = DATA_DIR / "projects"
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "static"
 METADATA_FILENAME = "metadata.json"
+SUMMARY_FILENAME = "summary.json"
 
 app = FastAPI(title="Test Results Dashboard API", openapi_url="/api/openapi.json")
 
@@ -59,6 +61,44 @@ def ensure_directories() -> None:
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _load_summary_statistics(project: str, build_id: str) -> dict[str, int]:
+    base_stats = {
+        "passed": 0,
+        "failed": 0,
+        "broken": 0,
+        "skipped": 0,
+        "unknown": 0,
+        "total": 0,
+    }
+
+    summary_path = PROJECTS_DIR / project / "history" / build_id / "widgets" / SUMMARY_FILENAME
+    if not summary_path.exists():
+        return base_stats
+
+    try:
+        summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
+        statistic = summary_data.get("statistic") or {}
+    except (json.JSONDecodeError, OSError):
+        return base_stats
+
+    stats: dict[str, int] = base_stats.copy()
+    for key in stats:
+        if key == "total":
+            continue
+        stats[key] = int(statistic.get(key, 0))
+
+    stats["total"] = int(statistic.get("total", sum(stats.values())))
+    return stats
+
+
+def _derive_status(statistics: dict[str, int]) -> str:
+    if statistics["failed"] > 0 or statistics["broken"] > 0:
+        return "failed"
+    if statistics["passed"] > 0 and statistics["failed"] == 0 and statistics["broken"] == 0:
+        return "passed"
+    return "unknown"
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     ensure_directories()
@@ -81,6 +121,49 @@ async def list_projects() -> list[dict[str, object]]:
             }
         )
     return sorted(projects, key=lambda item: item["project"])
+
+
+def _last_run_for_project(metadata: ProjectMetadata) -> Optional[datetime]:
+    if metadata.latest is None:
+        return None
+
+    for entry in reversed(metadata.history):
+        if entry.build_id == metadata.latest:
+            return entry.uploaded_at
+    return None
+
+
+@app.get("/api/overview")
+async def project_overview() -> list[dict[str, object]]:
+    ensure_directories()
+    overview = []
+
+    for project_dir in PROJECTS_DIR.iterdir():
+        if not project_dir.is_dir():
+            continue
+
+        metadata = ProjectMetadata.load(project_dir.name)
+        statistics = _load_summary_statistics(project_dir.name, metadata.latest) if metadata.latest else {
+            "passed": 0,
+            "failed": 0,
+            "broken": 0,
+            "skipped": 0,
+            "unknown": 0,
+            "total": 0,
+        }
+
+        overview.append(
+            {
+                "project": project_dir.name,
+                "latest": metadata.latest,
+                "lastRun": _last_run_for_project(metadata),
+                "status": _derive_status(statistics),
+                "statistics": statistics,
+                "reportUrl": f"/api/projects/{project_dir.name}/report/index.html" if metadata.latest else None,
+            }
+        )
+
+    return sorted(overview, key=lambda item: item["project"])
 
 
 @app.get("/api/projects/{project}")
