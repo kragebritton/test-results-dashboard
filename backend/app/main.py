@@ -1,352 +1,39 @@
 from __future__ import annotations
 
-import json
-import shutil
-import tempfile
-import zipfile
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import List, Optional
-
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-PROJECTS_DIR = DATA_DIR / "projects"
-FRONTEND_DIST = Path(__file__).resolve().parent.parent / "static"
-METADATA_FILENAME = "metadata.json"
-SUMMARY_FILENAME = "summary.json"
-
-app = FastAPI(title="Test Results Dashboard API", openapi_url="/api/openapi.json")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+from app.api.routes.projects import router as projects_router
+from app.core.settings import FRONTEND_DIST, ensure_directories
 
 
-class HistoryEntry(BaseModel):
-    build_id: str
-    uploaded_at: datetime
+def create_application() -> FastAPI:
+    application = FastAPI(title="Test Results Dashboard API", openapi_url="/api/openapi.json")
 
-
-class ProjectMetadata(BaseModel):
-    project: str
-    latest: Optional[str] = None
-    history: List[HistoryEntry] = Field(default_factory=list)
-    retention_runs: Optional[int] = Field(None, ge=1)
-    retention_days: Optional[int] = Field(None, ge=1)
-
-    def save(self) -> None:
-        project_dir = PROJECTS_DIR / self.project
-        project_dir.mkdir(parents=True, exist_ok=True)
-        metadata_path = project_dir / METADATA_FILENAME
-        with metadata_path.open("w", encoding="utf-8") as fp:
-            fp.write(self.model_dump_json(indent=2))
-
-    @classmethod
-    def load(cls, project: str) -> "ProjectMetadata":
-        metadata_path = PROJECTS_DIR / project / METADATA_FILENAME
-        if metadata_path.exists():
-            return cls.model_validate_json(metadata_path.read_text(encoding="utf-8"))
-        return cls(project=project)
-
-
-class ProjectRetentionSettings(BaseModel):
-    retention_runs: Optional[int] = Field(None, ge=1)
-    retention_days: Optional[int] = Field(None, ge=1)
-
-
-def ensure_directories() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _load_summary_statistics(project: str, build_id: str) -> dict[str, int]:
-    base_stats = {
-        "passed": 0,
-        "failed": 0,
-        "broken": 0,
-        "skipped": 0,
-        "unknown": 0,
-        "total": 0,
-    }
-
-    summary_path = PROJECTS_DIR / project / "history" / build_id / "widgets" / SUMMARY_FILENAME
-    if not summary_path.exists():
-        return base_stats
-
-    try:
-        summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
-        statistic = summary_data.get("statistic") or {}
-    except (json.JSONDecodeError, OSError):
-        return base_stats
-
-    stats: dict[str, int] = base_stats.copy()
-    for key in stats:
-        if key == "total":
-            continue
-        stats[key] = int(statistic.get(key, 0))
-
-    stats["total"] = int(statistic.get("total", sum(stats.values())))
-    return stats
-
-
-def _derive_status(statistics: dict[str, int]) -> str:
-    if statistics["failed"] > 0 or statistics["broken"] > 0:
-        return "failed"
-    if statistics["passed"] > 0 and statistics["failed"] == 0 and statistics["broken"] == 0:
-        return "passed"
-    return "unknown"
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    ensure_directories()
-
-
-@app.get("/api/projects")
-async def list_projects() -> list[dict[str, object]]:
-    ensure_directories()
-    projects = []
-    for project_dir in PROJECTS_DIR.iterdir():
-        if not project_dir.is_dir():
-            continue
-        metadata = ProjectMetadata.load(project_dir.name)
-        projects.append(
-            {
-                "project": project_dir.name,
-                "latest": metadata.latest,
-                "history": metadata.history,
-                "retentionRuns": metadata.retention_runs,
-                "retentionDays": metadata.retention_days,
-                "reportUrl": f"/api/projects/{project_dir.name}/report/index.html" if metadata.latest else None,
-            }
-        )
-    return sorted(projects, key=lambda item: item["project"])
-
-
-def _last_run_for_project(metadata: ProjectMetadata) -> Optional[datetime]:
-    if metadata.latest is None:
-        return None
-
-    for entry in reversed(metadata.history):
-        if entry.build_id == metadata.latest:
-            return entry.uploaded_at
-    return None
-
-
-def _cleanup_project_history(metadata: ProjectMetadata) -> bool:
-    if metadata.retention_runs is None and metadata.retention_days is None:
-        return False
-
-    project_dir = PROJECTS_DIR / metadata.project
-    history_dir = project_dir / "history"
-    if not history_dir.exists():
-        return False
-
-    now = datetime.utcnow()
-    entries = sorted(metadata.history, key=lambda entry: entry.uploaded_at, reverse=True)
-
-    retained: list[HistoryEntry] = []
-    for entry in entries:
-        if metadata.retention_days is not None:
-            if entry.uploaded_at < now - timedelta(days=metadata.retention_days):
-                continue
-        retained.append(entry)
-
-    if metadata.retention_runs is not None:
-        retained = retained[: metadata.retention_runs]
-
-    removed_ids = {entry.build_id for entry in entries} - {entry.build_id for entry in retained}
-    for build_id in removed_ids:
-        target_dir = history_dir / build_id
-        if target_dir.exists():
-            shutil.rmtree(target_dir, ignore_errors=True)
-
-    latest_id = metadata.latest
-    if latest_id and latest_id not in {entry.build_id for entry in retained}:
-        metadata.latest = retained[0].build_id if retained else None
-
-    metadata.history = retained
-    return bool(removed_ids or latest_id != metadata.latest)
-
-
-@app.get("/api/overview")
-async def project_overview() -> list[dict[str, object]]:
-    ensure_directories()
-    overview = []
-
-    for project_dir in PROJECTS_DIR.iterdir():
-        if not project_dir.is_dir():
-            continue
-
-        metadata = ProjectMetadata.load(project_dir.name)
-        statistics = _load_summary_statistics(project_dir.name, metadata.latest) if metadata.latest else {
-            "passed": 0,
-            "failed": 0,
-            "broken": 0,
-            "skipped": 0,
-            "unknown": 0,
-            "total": 0,
-        }
-
-        overview.append(
-            {
-                "project": project_dir.name,
-                "latest": metadata.latest,
-                "lastRun": _last_run_for_project(metadata),
-                "status": _derive_status(statistics),
-                "statistics": statistics,
-                "retentionRuns": metadata.retention_runs,
-                "retentionDays": metadata.retention_days,
-                "reportUrl": f"/api/projects/{project_dir.name}/report/index.html" if metadata.latest else None,
-            }
-        )
-
-    return sorted(overview, key=lambda item: item["project"])
-
-
-@app.get("/api/projects/{project}")
-async def project_details(project: str) -> dict[str, object]:
-    metadata = ProjectMetadata.load(project)
-    if metadata.latest is None:
-        raise HTTPException(status_code=404, detail="Project has no uploaded reports yet.")
-
-    return {
-        "project": project,
-        "latest": metadata.latest,
-        "history": metadata.history,
-        "retentionRuns": metadata.retention_runs,
-        "retentionDays": metadata.retention_days,
-        "reportUrl": f"/api/projects/{project}/report/index.html",
-    }
-
-
-@app.get("/api/projects/{project}/retention")
-async def get_retention_settings(project: str) -> ProjectRetentionSettings:
-    metadata = ProjectMetadata.load(project)
-    return ProjectRetentionSettings(
-        retention_runs=metadata.retention_runs, retention_days=metadata.retention_days
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
+    application.include_router(projects_router)
 
-@app.post("/api/projects/{project}/retention")
-async def update_retention_settings(
-    project: str, settings: ProjectRetentionSettings
-) -> ProjectRetentionSettings:
-    ensure_directories()
-    metadata = ProjectMetadata.load(project)
-    metadata.retention_runs = settings.retention_runs
-    metadata.retention_days = settings.retention_days
+    @application.on_event("startup")
+    async def startup_event() -> None:  # pragma: no cover - startup hook
+        ensure_directories()
 
-    _cleanup_project_history(metadata)
-    metadata.save()
+    if FRONTEND_DIST.exists():
+        application.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+    else:
 
-    return ProjectRetentionSettings(
-        retention_runs=metadata.retention_runs, retention_days=metadata.retention_days
-    )
+        @application.get("/")
+        async def root() -> dict[str, str]:
+            return {"status": "ok", "message": "Test Results Dashboard API"}
 
-
-def _extract_upload(project: str, upload_content: bytes, build_id: str) -> Path:
-    project_dir = PROJECTS_DIR / project
-    history_dir = project_dir / "history"
-    history_dir.mkdir(parents=True, exist_ok=True)
-
-    target_dir = history_dir / build_id
-    if target_dir.exists():
-        shutil.rmtree(target_dir)
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        tmp_path = Path(temp_dir) / "upload.zip"
-        with tmp_path.open("wb") as buffer:
-            buffer.write(upload_content)
-
-        with tempfile.TemporaryDirectory() as extract_dir:
-            with zipfile.ZipFile(tmp_path, "r") as archive:
-                archive.extractall(extract_dir)
-
-            shutil.copytree(extract_dir, target_dir)
-
-    return target_dir
+    return application
 
 
-@app.post("/api/projects/{project}/upload")
-async def upload_results(project: str, background_tasks: BackgroundTasks, file: UploadFile = File(...)) -> dict[str, str]:
-    ensure_directories()
-    if file.content_type not in {"application/zip", "application/x-zip-compressed", "multipart/form-data"}:
-        raise HTTPException(status_code=400, detail="Upload must be a zip archive containing an Allure report.")
-
-    build_id = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-
-    file_content = await file.read()
-
-    def process_upload() -> None:
-        try:
-            report_dir = _extract_upload(project, file_content, build_id)
-            index_path = report_dir / "index.html"
-            if not index_path.exists():
-                raise HTTPException(
-                    status_code=400,
-                    detail="Uploaded archive does not contain an Allure report (index.html missing).",
-                )
-
-            metadata = ProjectMetadata.load(project)
-            metadata.latest = build_id
-            metadata.history.append(HistoryEntry(build_id=build_id, uploaded_at=datetime.utcnow()))
-            _cleanup_project_history(metadata)
-            metadata.save()
-        finally:
-            file.file.close()
-
-    background_tasks.add_task(process_upload)
-
-    return {"message": "Upload accepted", "build_id": build_id}
-
-
-def _safe_join(base: Path, path: Path) -> Path:
-    try:
-        resolved = path.resolve()
-        base_resolved = base.resolve()
-        if base_resolved in resolved.parents or resolved == base_resolved:
-            return resolved
-    except RuntimeError:
-        pass
-    raise HTTPException(status_code=404, detail="File not found")
-
-
-@app.get("/api/projects/{project}/report/{path:path}")
-async def serve_report(project: str, path: str = "index.html") -> FileResponse:
-    metadata = ProjectMetadata.load(project)
-    if metadata.latest is None:
-        raise HTTPException(status_code=404, detail="Project not found or no report uploaded.")
-
-    report_dir = PROJECTS_DIR / project / "history" / metadata.latest
-    if not report_dir.exists():
-        raise HTTPException(status_code=404, detail="Report not found.")
-
-    requested_path = report_dir / path
-    if requested_path.is_dir():
-        requested_path = requested_path / "index.html"
-
-    safe_path = _safe_join(report_dir, requested_path)
-
-    if not safe_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-
-    return FileResponse(safe_path)
-
-
-if FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
-else:
-
-    @app.get("/")
-    async def root() -> dict[str, str]:
-        return {"status": "ok", "message": "Test Results Dashboard API"}
+app = create_application()
