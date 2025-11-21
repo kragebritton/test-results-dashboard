@@ -1,4 +1,4 @@
-import type { ProjectSummary } from '../App'
+import type { ProjectSummary } from '../types'
 import './ProjectList.css'
 
 type Props = {
