@@ -4,7 +4,7 @@ import json
 import shutil
 import tempfile
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
@@ -40,6 +40,8 @@ class ProjectMetadata(BaseModel):
     project: str
     latest: Optional[str] = None
     history: List[HistoryEntry] = Field(default_factory=list)
+    retention_runs: Optional[int] = Field(None, ge=1)
+    retention_days: Optional[int] = Field(None, ge=1)
 
     def save(self) -> None:
         project_dir = PROJECTS_DIR / self.project
@@ -54,6 +56,11 @@ class ProjectMetadata(BaseModel):
         if metadata_path.exists():
             return cls.model_validate_json(metadata_path.read_text(encoding="utf-8"))
         return cls(project=project)
+
+
+class ProjectRetentionSettings(BaseModel):
+    retention_runs: Optional[int] = Field(None, ge=1)
+    retention_days: Optional[int] = Field(None, ge=1)
 
 
 def ensure_directories() -> None:
@@ -117,6 +124,8 @@ async def list_projects() -> list[dict[str, object]]:
                 "project": project_dir.name,
                 "latest": metadata.latest,
                 "history": metadata.history,
+                "retentionRuns": metadata.retention_runs,
+                "retentionDays": metadata.retention_days,
                 "reportUrl": f"/api/projects/{project_dir.name}/report/index.html" if metadata.latest else None,
             }
         )
@@ -131,6 +140,42 @@ def _last_run_for_project(metadata: ProjectMetadata) -> Optional[datetime]:
         if entry.build_id == metadata.latest:
             return entry.uploaded_at
     return None
+
+
+def _cleanup_project_history(metadata: ProjectMetadata) -> bool:
+    if metadata.retention_runs is None and metadata.retention_days is None:
+        return False
+
+    project_dir = PROJECTS_DIR / metadata.project
+    history_dir = project_dir / "history"
+    if not history_dir.exists():
+        return False
+
+    now = datetime.utcnow()
+    entries = sorted(metadata.history, key=lambda entry: entry.uploaded_at, reverse=True)
+
+    retained: list[HistoryEntry] = []
+    for entry in entries:
+        if metadata.retention_days is not None:
+            if entry.uploaded_at < now - timedelta(days=metadata.retention_days):
+                continue
+        retained.append(entry)
+
+    if metadata.retention_runs is not None:
+        retained = retained[: metadata.retention_runs]
+
+    removed_ids = {entry.build_id for entry in entries} - {entry.build_id for entry in retained}
+    for build_id in removed_ids:
+        target_dir = history_dir / build_id
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+
+    latest_id = metadata.latest
+    if latest_id and latest_id not in {entry.build_id for entry in retained}:
+        metadata.latest = retained[0].build_id if retained else None
+
+    metadata.history = retained
+    return bool(removed_ids or latest_id != metadata.latest)
 
 
 @app.get("/api/overview")
@@ -159,6 +204,8 @@ async def project_overview() -> list[dict[str, object]]:
                 "lastRun": _last_run_for_project(metadata),
                 "status": _derive_status(statistics),
                 "statistics": statistics,
+                "retentionRuns": metadata.retention_runs,
+                "retentionDays": metadata.retention_days,
                 "reportUrl": f"/api/projects/{project_dir.name}/report/index.html" if metadata.latest else None,
             }
         )
@@ -176,8 +223,35 @@ async def project_details(project: str) -> dict[str, object]:
         "project": project,
         "latest": metadata.latest,
         "history": metadata.history,
+        "retentionRuns": metadata.retention_runs,
+        "retentionDays": metadata.retention_days,
         "reportUrl": f"/api/projects/{project}/report/index.html",
     }
+
+
+@app.get("/api/projects/{project}/retention")
+async def get_retention_settings(project: str) -> ProjectRetentionSettings:
+    metadata = ProjectMetadata.load(project)
+    return ProjectRetentionSettings(
+        retention_runs=metadata.retention_runs, retention_days=metadata.retention_days
+    )
+
+
+@app.post("/api/projects/{project}/retention")
+async def update_retention_settings(
+    project: str, settings: ProjectRetentionSettings
+) -> ProjectRetentionSettings:
+    ensure_directories()
+    metadata = ProjectMetadata.load(project)
+    metadata.retention_runs = settings.retention_runs
+    metadata.retention_days = settings.retention_days
+
+    _cleanup_project_history(metadata)
+    metadata.save()
+
+    return ProjectRetentionSettings(
+        retention_runs=metadata.retention_runs, retention_days=metadata.retention_days
+    )
 
 
 def _extract_upload(project: str, upload_content: bytes, build_id: str) -> Path:
@@ -226,6 +300,7 @@ async def upload_results(project: str, background_tasks: BackgroundTasks, file: 
             metadata = ProjectMetadata.load(project)
             metadata.latest = build_id
             metadata.history.append(HistoryEntry(build_id=build_id, uploaded_at=datetime.utcnow()))
+            _cleanup_project_history(metadata)
             metadata.save()
         finally:
             file.file.close()
