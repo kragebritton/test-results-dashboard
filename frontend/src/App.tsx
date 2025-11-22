@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { FormEvent } from 'react'
 import { fetchProjectOverview, fetchProjects } from './api'
 import { ProjectList } from './components/ProjectList'
 import { ProjectTable } from './components/ProjectTable'
@@ -7,11 +8,20 @@ import { SummaryGrid } from './components/SummaryGrid'
 import type { Environment, ProjectOverview, ProjectSummary } from './types'
 import './styles/layout.css'
 import './styles/table.css'
+import './styles/home.css'
 
 type SortKey = 'project' | 'branch' | 'lastRun' | 'status' | 'duration'
 type SortDirection = 'asc' | 'desc'
 type StatusFilter = 'all' | 'passing' | 'failing' | 'flaky'
 type ScopeFilter = 'my-projects' | 'favorites' | 'recent'
+type ViewMode = 'summary' | 'reports' | 'settings'
+
+type ProjectConfig = {
+  name: string
+  reportUrl: string
+  description: string
+  environment: Environment
+}
 
 type SortState = { key: SortKey; direction: SortDirection }
 
@@ -22,6 +32,8 @@ type DerivedOverview = ProjectOverview & {
 }
 
 const PREFERENCE_KEY = 'trd-table-preferences'
+const DEFAULT_ENV_KEY = 'trd-default-environment'
+const CONFIG_KEY = 'trd-project-configs'
 
 function formatDateTime(value: string | null) {
   if (!value) return 'No runs yet'
@@ -106,6 +118,7 @@ function getInitialPreferences(): {
 
 function App() {
   const initialPreferences = useMemo(() => getInitialPreferences(), [])
+  const storedEnvironment = (localStorage.getItem(DEFAULT_ENV_KEY) as Environment | null) ?? 'prod'
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [overview, setOverview] = useState<ProjectOverview[]>([])
   const [loading, setLoading] = useState(true)
@@ -113,8 +126,8 @@ function App() {
   const [overviewLoading, setOverviewLoading] = useState(true)
   const [overviewError, setOverviewError] = useState<string | null>(null)
   const [selectedProject, setSelectedProject] = useState<ProjectSummary | null>(null)
-  const [viewMode, setViewMode] = useState<'summary' | 'reports'>('summary')
-  const [environment, setEnvironment] = useState<Environment>('prod')
+  const [viewMode, setViewMode] = useState<ViewMode>('summary')
+  const [environment, setEnvironment] = useState<Environment>(storedEnvironment)
   const [sortState, setSortState] = useState<SortState>(initialPreferences.sort)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialPreferences.statusFilter)
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>(initialPreferences.scopeFilter)
@@ -126,6 +139,16 @@ function App() {
     return stored ? JSON.parse(stored) : []
   })
   const [sortAnnouncement, setSortAnnouncement] = useState('')
+  const [projectConfigs, setProjectConfigs] = useState<ProjectConfig[]>(() => {
+    const stored = localStorage.getItem(CONFIG_KEY)
+    return stored ? JSON.parse(stored) : []
+  })
+  const [configForm, setConfigForm] = useState<ProjectConfig>({
+    name: '',
+    reportUrl: '',
+    description: '',
+    environment,
+  })
 
   useEffect(() => {
     setLoading(true)
@@ -157,6 +180,11 @@ function App() {
   const handleSelect = (projectName: string) => {
     const target = projects.find((project) => project.project === projectName)
     if (target) setSelectedProject(target)
+  }
+
+  const handleEnvironmentChange = (envOption: Environment) => {
+    setEnvironment(envOption)
+    setConfigForm((current) => ({ ...current, environment: envOption }))
   }
 
   const handleSortChange = (key: SortKey) => {
@@ -202,6 +230,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem('trd-favorites', JSON.stringify(favoriteProjects))
   }, [favoriteProjects])
+
+  useEffect(() => {
+    localStorage.setItem(DEFAULT_ENV_KEY, environment)
+  }, [environment])
+
+  useEffect(() => {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(projectConfigs))
+  }, [projectConfigs])
 
   const statusMessage = useMemo(() => {
     if (loading) return 'Loading projects...'
@@ -286,13 +322,51 @@ function App() {
     })
   }, [decoratedOverview, scopeFilter, favoriteProjects, statusFilter, searchQuery, dateFrom, dateTo, sortState])
 
+  const passingCount = decoratedOverview.filter((item) => item.derivedStatus === 'passing').length
+  const failingCount = decoratedOverview.filter((item) => item.derivedStatus === 'failing').length
+  const flakyCount = decoratedOverview.filter((item) => item.derivedStatus === 'flaky').length
+
+  const handleConfigSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!configForm.name.trim() || !configForm.reportUrl.trim()) return
+
+    setProjectConfigs((current) => {
+      const existingIndex = current.findIndex(
+        (entry) => entry.name.toLowerCase() === configForm.name.trim().toLowerCase(),
+      )
+      const updated = [...current]
+      if (existingIndex >= 0) {
+        updated[existingIndex] = { ...configForm, name: configForm.name.trim() }
+      } else {
+        updated.push({ ...configForm, name: configForm.name.trim() })
+      }
+      return updated
+    })
+
+    setConfigForm({ name: '', reportUrl: '', description: '', environment })
+  }
+
+  const handleConfigDelete = (name: string) => {
+    setProjectConfigs((current) => current.filter((config) => config.name !== name))
+  }
+
   return (
     <div className="layout">
       <header className="layout__header">
-        <div>
+        <div className="layout__intro">
           <p className="eyebrow">QA / Test Engineering</p>
           <h1>Test Results Dashboard</h1>
-          <p className="subtitle">Upload and browse Allure reports per project.</p>
+          <p className="subtitle">
+            Track pipelines, spot flaky suites, and configure project access from one place.
+          </p>
+          <div className="layout__cta">
+            <a className="primary-cta" href="#pipelines">
+              Browse test runs
+            </a>
+            <button className="ghost-cta" type="button" onClick={() => setViewMode('settings')}>
+              Open settings
+            </button>
+          </div>
         </div>
         <div className="layout__header-actions">
           <div className="pill-toggle" role="tablist" aria-label="Select environment">
@@ -301,7 +375,7 @@ function App() {
                 key={envOption}
                 type="button"
                 className={environment === envOption ? 'active' : ''}
-                onClick={() => setEnvironment(envOption)}
+                onClick={() => handleEnvironmentChange(envOption)}
                 role="tab"
                 aria-selected={environment === envOption}
               >
@@ -328,6 +402,15 @@ function App() {
             >
               Reports
             </button>
+            <button
+              type="button"
+              className={viewMode === 'settings' ? 'active' : ''}
+              onClick={() => setViewMode('settings')}
+              role="tab"
+              aria-selected={viewMode === 'settings'}
+            >
+              Settings
+            </button>
           </div>
         </div>
       </header>
@@ -335,7 +418,52 @@ function App() {
       <main className={`layout__content ${viewMode === 'summary' ? 'layout__content--single' : ''}`}>
         {viewMode === 'summary' ? (
           <section className="content">
-            <div className="panel table-panel" aria-label="Project runs table">
+            <section className="quick-actions" aria-label="Quick navigation">
+              <div className="quick-actions__card">
+                <div>
+                  <p className="eyebrow">Explore results</p>
+                  <h3>Project pipelines</h3>
+                  <p className="muted">Search, filter, and jump into the latest runs across every environment.</p>
+                </div>
+                <a className="inline-link" href="#pipelines">
+                  Go to runs
+                </a>
+              </div>
+              <div className="quick-actions__card">
+                <div>
+                  <p className="eyebrow">Health snapshot</p>
+                  <h3>Quality signals</h3>
+                  <p className="muted">See passing, failing, and flaky projects at a glance before drilling deeper.</p>
+                  <div className="pill-group" role="list" aria-label="Status breakdown">
+                    <span className="pill" role="listitem">
+                      Passing: {passingCount}
+                    </span>
+                    <span className="pill pill--amber" role="listitem">
+                      Failing: {failingCount}
+                    </span>
+                    <span className="pill pill--rose" role="listitem">
+                      Flaky: {flakyCount}
+                    </span>
+                  </div>
+                </div>
+                <a className="inline-link" href="#insights">
+                  View insights
+                </a>
+              </div>
+              <div className="quick-actions__card quick-actions__card--accent">
+                <div>
+                  <p className="eyebrow">Configure access</p>
+                  <h3>Project settings</h3>
+                  <p className="muted">
+                    Register report URLs, choose a default environment, and highlight the teams that own each pipeline.
+                  </p>
+                </div>
+                <button className="ghost-cta" type="button" onClick={() => setViewMode('settings')}>
+                  Configure projects
+                </button>
+              </div>
+            </section>
+            <div className="panel table-panel" aria-label="Project runs table" id="pipelines">
               <div className="table-panel__header">
                 <div>
                   <p className="eyebrow">Runs directory</p>
@@ -515,14 +643,16 @@ function App() {
               </div>
             </div>
 
-            <SummaryGrid overview={overview} statusMessage={overviewMessage} environment={environment} />
+            <div id="insights">
+              <SummaryGrid overview={overview} statusMessage={overviewMessage} environment={environment} />
+            </div>
             <ProjectTable
               overview={overview}
               statusMessage={overviewMessage}
               environment={environment}
             />
           </section>
-        ) : (
+        ) : viewMode === 'reports' ? (
           <>
             <aside className="panel">
               <ProjectList
@@ -548,6 +678,138 @@ function App() {
               )}
             </section>
           </>
+        ) : (
+          <section className="content settings" aria-label="Project configuration" id="settings">
+            <div className="panel settings__intro">
+              <p className="eyebrow">Configuration</p>
+              <h3>Project settings</h3>
+              <p className="muted">
+                Define how teams access their Allure reports, pick a default environment for the dashboard, and keep
+                metadata handy when triaging issues.
+              </p>
+              <div className="settings__tips">
+                <div>
+                  <strong>Tip:</strong> Use a short project name so it lines up with pipeline labels and table filters.
+                </div>
+                <div>
+                  <strong>Need to add owners?</strong> Fill in the description with team details and service links.
+                </div>
+              </div>
+            </div>
+
+            <div className="settings__grid">
+              <form className="panel settings__form" onSubmit={handleConfigSubmit}>
+                <div>
+                  <p className="eyebrow">Add configuration</p>
+                  <h4>Register a project</h4>
+                  <p className="muted">
+                    Capture the essentials for each test project so anyone landing on the dashboard can open the right
+                    report.
+                  </p>
+                </div>
+
+                <label>
+                  <span>Project name</span>
+                  <input
+                    required
+                    value={configForm.name}
+                    onChange={(event) => setConfigForm({ ...configForm, name: event.target.value })}
+                    placeholder="e.g. Checkout service"
+                  />
+                </label>
+
+                <label>
+                  <span>Report URL</span>
+                  <input
+                    required
+                    type="url"
+                    value={configForm.reportUrl}
+                    onChange={(event) => setConfigForm({ ...configForm, reportUrl: event.target.value })}
+                    placeholder="https://reports.example.com/checkout"
+                  />
+                </label>
+
+                <label>
+                  <span>Environment</span>
+                  <select
+                    value={configForm.environment}
+                    onChange={(event) => setConfigForm({ ...configForm, environment: event.target.value as Environment })}
+                  >
+                    {(['prod', 'staging', 'dev'] satisfies Environment[]).map((envOption) => (
+                      <option value={envOption} key={envOption}>
+                        {envOption.toUpperCase()}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  <span>Notes</span>
+                  <textarea
+                    value={configForm.description}
+                    onChange={(event) => setConfigForm({ ...configForm, description: event.target.value })}
+                    placeholder="Team name, service links, alert channel, or triage steps"
+                  />
+                </label>
+
+                <button type="submit" className="primary-cta">
+                  Save configuration
+                </button>
+              </form>
+
+              <div className="panel settings__list">
+                <div className="settings__list-header">
+                  <div>
+                    <p className="eyebrow">Default preferences</p>
+                    <h4>Environment and projects</h4>
+                    <p className="muted">
+                      Pick where the dashboard should start, then review the projects that have been registered so far.
+                    </p>
+                  </div>
+                  <div className="segmented" role="group" aria-label="Default environment">
+                    {(['prod', 'staging', 'dev'] satisfies Environment[]).map((envOption) => (
+                      <button
+                        type="button"
+                        key={envOption}
+                        className={environment === envOption ? 'active' : ''}
+                        onClick={() => handleEnvironmentChange(envOption)}
+                        aria-pressed={environment === envOption}
+                      >
+                        {envOption.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {projectConfigs.length ? (
+                  <ul className="settings__items" aria-label="Configured projects">
+                    {projectConfigs.map((config) => (
+                      <li key={config.name} className="settings__item">
+                        <div>
+                          <div className="settings__item-heading">
+                            <h5>{config.name}</h5>
+                            <span className="pill">{config.environment.toUpperCase()}</span>
+                          </div>
+                          <p className="muted">{config.description || 'No notes added yet.'}</p>
+                          <a className="inline-link" href={config.reportUrl} target="_blank" rel="noreferrer">
+                            Open report
+                          </a>
+                        </div>
+                        <button type="button" className="ghost-cta" onClick={() => handleConfigDelete(config.name)}>
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="empty-state">
+                    <h4>No projects configured yet</h4>
+                    <p>Add a few key projects to make onboarding easier for the rest of the team.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
         )}
       </main>
     </div>

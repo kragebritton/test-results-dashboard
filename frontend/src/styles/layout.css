@@ -5,10 +5,10 @@
 }
 
 .layout__header {
-  background: linear-gradient(135deg, #1e3a8a, #2563eb);
-  color: #ffffff;
-  padding: 2rem 3rem;
-  box-shadow: 0 12px 35px rgba(37, 99, 235, 0.35);
+  background: linear-gradient(135deg, #0b1224, #1f3b87);
+  color: #f8fafc;
+  padding: 2.25rem 3rem;
+  box-shadow: 0 12px 35px rgba(11, 18, 36, 0.4);
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
@@ -48,17 +48,17 @@
 
 .pill-toggle {
   display: inline-flex;
-  background: rgba(255, 255, 255, 0.2);
-  padding: 0.25rem;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.3rem;
   border-radius: 999px;
   gap: 0.35rem;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.25);
 }
 
 .pill-toggle button {
   border: none;
   background: transparent;
-  color: #e5e7eb;
+  color: #e0e7ff;
   padding: 0.5rem 1.25rem;
   border-radius: 999px;
   font-weight: 600;
@@ -68,7 +68,7 @@
 
 .pill-toggle button.active {
   background: #ffffff;
-  color: #1e3a8a;
+  color: #0b1224;
   box-shadow: 0 8px 25px rgba(0, 0, 0, 0.12);
 }
 
