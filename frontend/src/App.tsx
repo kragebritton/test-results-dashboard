@@ -16,7 +16,7 @@ type SortState = { key: SortKey; direction: SortDirection }
 
 type DerivedOverview = ProjectOverview & {
   branchLabel: string
-  durationMs: number | null
+  durationMs?: number
   derivedStatus: StatusFilter
 }
 
@@ -37,7 +37,7 @@ function formatDateTime(value: string | null) {
   }
 }
 
-function formatDuration(milliseconds: number | null) {
+function formatDuration(milliseconds: number | null | undefined) {
   if (!milliseconds || Number.isNaN(milliseconds)) return '—'
   const seconds = milliseconds / 1000
   if (seconds < 90) return `${seconds.toFixed(1)}s`
@@ -160,7 +160,7 @@ function App() {
 
   const handleSortChange = (key: SortKey) => {
     setSortState((current) => {
-      const nextDirection = current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
+      const nextDirection: SortDirection = current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
       const updated = { key, direction: nextDirection }
       setSortAnnouncement(`Sorted by ${key === 'lastRun' ? 'last run' : key} in ${nextDirection}ending order`)
       return updated
@@ -223,7 +223,8 @@ function App() {
       overview.map((item) => ({
         ...item,
         branchLabel: (item as { branch?: string }).branch ?? item.latest ?? '—',
-        durationMs: (item as { durationMs?: number; duration?: number }).durationMs ?? (item as { duration?: number }).duration ?? null,
+        durationMs:
+          (item as { durationMs?: number; duration?: number }).durationMs ?? (item as { duration?: number }).duration ?? undefined,
         derivedStatus: item.status === 'passed' ? 'passing' : item.status === 'failed' ? 'failing' : 'flaky',
       })),
     [overview],
