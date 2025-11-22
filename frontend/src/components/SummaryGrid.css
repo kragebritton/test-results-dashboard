@@ -22,6 +22,10 @@
   gap: 0.75rem;
 }
 
+.summary-card header .tag {
+  margin-top: 0.35rem;
+}
+
 .summary-grid__meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -91,4 +95,8 @@
 
 .summary-panel {
   text-align: center;
+}
+
+.summary-panel__context {
+  margin-bottom: 0.5rem;
 }

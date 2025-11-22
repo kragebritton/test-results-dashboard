@@ -1,4 +1,4 @@
-import type { ProjectOverview } from '../types'
+import type { Environment, ProjectOverview } from '../types'
 import './SummaryGrid.css'
 
 function formatDate(value: string | null) {
@@ -19,12 +19,16 @@ function formatDate(value: string | null) {
 type Props = {
   overview: ProjectOverview[]
   statusMessage: string | null
+  environment: Environment
 }
 
-export function SummaryGrid({ overview, statusMessage }: Props) {
+export function SummaryGrid({ overview, statusMessage, environment }: Props) {
   if (statusMessage) {
     return (
       <div className="panel summary-panel">
+        <div className="summary-panel__context">
+          <span className="tag">Environment: {environment.toUpperCase()}</span>
+        </div>
         <p>{statusMessage}</p>
       </div>
     )
@@ -38,6 +42,7 @@ export function SummaryGrid({ overview, statusMessage }: Props) {
             <div>
               <p className="eyebrow">Project</p>
               <h3>{project.project}</h3>
+              <span className="tag">Environment: {project.environment.toUpperCase()}</span>
             </div>
             <span className={`status status--${project.status}`}>
               {project.status === 'passed' && 'Healthy'}

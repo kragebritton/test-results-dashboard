@@ -7,6 +7,8 @@ PROJECTS_DIR = DATA_DIR / "projects"
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "static"
 METADATA_FILENAME = "metadata.json"
 SUMMARY_FILENAME = "summary.json"
+DEFAULT_ENVIRONMENT = "prod"
+ALLOWED_ENVIRONMENTS = {"dev", "staging", "prod"}
 
 
 def ensure_directories() -> None:

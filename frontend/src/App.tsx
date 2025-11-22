@@ -3,7 +3,7 @@ import { fetchProjectOverview, fetchProjects } from './api'
 import { ProjectList } from './components/ProjectList'
 import { ReportFrame } from './components/ReportFrame'
 import { SummaryGrid } from './components/SummaryGrid'
-import type { ProjectOverview, ProjectSummary } from './types'
+import type { Environment, ProjectOverview, ProjectSummary } from './types'
 import './styles/layout.css'
 
 function App() {
@@ -15,23 +15,34 @@ function App() {
   const [overviewError, setOverviewError] = useState<string | null>(null)
   const [selectedProject, setSelectedProject] = useState<ProjectSummary | null>(null)
   const [viewMode, setViewMode] = useState<'summary' | 'reports'>('summary')
+  const [environment, setEnvironment] = useState<Environment>('prod')
 
   useEffect(() => {
-    fetchProjects()
+    setLoading(true)
+    setError(null)
+    fetchProjects(environment)
       .then((data) => {
         setProjects(data)
-        setSelectedProject((current) => current ?? data[0] ?? null)
+        setSelectedProject((current) => {
+          if (current) {
+            const matching = data.find((project) => project.project === current.project)
+            if (matching) return matching
+          }
+          return data[0] ?? null
+        })
       })
       .catch(() => setError('Unable to load projects. Please check the API service.'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [environment])
 
   useEffect(() => {
-    fetchProjectOverview()
+    setOverviewLoading(true)
+    setOverviewError(null)
+    fetchProjectOverview(environment)
       .then((data) => setOverview(data))
       .catch(() => setOverviewError('Unable to load project overview. Please check the API service.'))
       .finally(() => setOverviewLoading(false))
-  }, [])
+  }, [environment])
 
   const handleSelect = (projectName: string) => {
     const target = projects.find((project) => project.project === projectName)
@@ -61,6 +72,20 @@ function App() {
           <p className="subtitle">Upload and browse Allure reports per project.</p>
         </div>
         <div className="layout__header-actions">
+          <div className="pill-toggle" role="tablist" aria-label="Select environment">
+            {(['prod', 'staging', 'dev'] satisfies Environment[]).map((envOption) => (
+              <button
+                key={envOption}
+                type="button"
+                className={environment === envOption ? 'active' : ''}
+                onClick={() => setEnvironment(envOption)}
+                role="tab"
+                aria-selected={environment === envOption}
+              >
+                {envOption.toUpperCase()}
+              </button>
+            ))}
+          </div>
           <div className="pill-toggle" role="tablist" aria-label="Choose dashboard view">
             <button
               type="button"
@@ -87,7 +112,7 @@ function App() {
       <main className={`layout__content ${viewMode === 'summary' ? 'layout__content--single' : ''}`}>
         {viewMode === 'summary' ? (
           <section className="content">
-            <SummaryGrid overview={overview} statusMessage={overviewMessage} />
+            <SummaryGrid overview={overview} statusMessage={overviewMessage} environment={environment} />
           </section>
         ) : (
           <>
@@ -97,11 +122,16 @@ function App() {
                 selected={selectedProject?.project ?? ''}
                 onSelect={handleSelect}
                 statusMessage={statusMessage}
+                environment={environment}
               />
             </aside>
             <section className="content">
               {selectedProject && selectedProject.reportUrl ? (
-                <ReportFrame project={selectedProject.project} url={selectedProject.reportUrl} />
+                <ReportFrame
+                  project={selectedProject.project}
+                  url={selectedProject.reportUrl}
+                  environment={selectedProject.environment}
+                />
               ) : (
                 <div className="empty-state">
                   <h3>Select a project to view its latest Allure report</h3>
