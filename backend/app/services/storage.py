@@ -9,7 +9,14 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from app.core.settings import METADATA_FILENAME, PROJECTS_DIR, SUMMARY_FILENAME, ensure_directories
+from app.core.settings import (
+    ALLOWED_ENVIRONMENTS,
+    DEFAULT_ENVIRONMENT,
+    METADATA_FILENAME,
+    PROJECTS_DIR,
+    SUMMARY_FILENAME,
+    ensure_directories,
+)
 from app.models import HistoryEntry, ProjectMetadata, ProjectRetentionSettings
 
 
@@ -17,6 +24,36 @@ class ProjectStorageService:
     def __init__(self, projects_dir: Path = PROJECTS_DIR) -> None:
         self.projects_dir = projects_dir
         ensure_directories()
+
+    @staticmethod
+    def validate_environment(environment: str) -> str:
+        if environment not in ALLOWED_ENVIRONMENTS:
+            raise HTTPException(status_code=400, detail="Unsupported environment specified.")
+        return environment
+
+    @staticmethod
+    def _latest_for_environment(metadata: ProjectMetadata, environment: str) -> str | None:
+        if metadata.latest_by_environment.get(environment):
+            return metadata.latest_by_environment[environment]
+
+        if environment == DEFAULT_ENVIRONMENT and metadata.latest and not metadata.latest_by_environment:
+            return metadata.latest
+
+        return None
+
+    @staticmethod
+    def _history_for_environment(metadata: ProjectMetadata, environment: str) -> list[HistoryEntry]:
+        if not metadata.history:
+            return []
+
+        scoped_history = [entry for entry in metadata.history if entry.environment == environment]
+        if scoped_history:
+            return scoped_history
+
+        if environment == DEFAULT_ENVIRONMENT:
+            return metadata.history
+
+        return []
 
     # Metadata helpers
     def load_metadata(self, project: str) -> ProjectMetadata:
@@ -33,7 +70,13 @@ class ProjectStorageService:
             fp.write(metadata.model_dump_json(indent=2))
 
     # Summary helpers
-    def _load_summary_statistics(self, project: str, build_id: str) -> dict[str, int]:
+    def _summary_path(self, project: str, environment: str, build_id: str) -> Path:
+        return self.projects_dir / project / "history" / environment / build_id / "widgets" / SUMMARY_FILENAME
+
+    def _legacy_summary_path(self, project: str, build_id: str) -> Path:
+        return self.projects_dir / project / "history" / build_id / "widgets" / SUMMARY_FILENAME
+
+    def _load_summary_statistics(self, project: str, build_id: str, environment: str) -> dict[str, int]:
         base_stats = {
             "passed": 0,
             "failed": 0,
@@ -43,7 +86,11 @@ class ProjectStorageService:
             "total": 0,
         }
 
-        summary_path = self.projects_dir / project / "history" / build_id / "widgets" / SUMMARY_FILENAME
+        summary_path = self._summary_path(project, environment, build_id)
+        legacy_summary_path = self._legacy_summary_path(project, build_id)
+
+        if not summary_path.exists() and legacy_summary_path.exists():
+            summary_path = legacy_summary_path
         if not summary_path.exists():
             return base_stats
 
@@ -71,36 +118,40 @@ class ProjectStorageService:
         return "unknown"
 
     @staticmethod
-    def _last_run_for_project(metadata: ProjectMetadata) -> datetime | None:
+    def _last_run_for_project(metadata: ProjectMetadata, environment: str) -> datetime | None:
         if metadata.latest is None:
             return None
 
         for entry in reversed(metadata.history):
-            if entry.build_id == metadata.latest:
+            if entry.environment != environment:
+                continue
+            if entry.build_id == metadata.latest_by_environment.get(environment, metadata.latest):
                 return entry.uploaded_at
         return None
 
     # Listing endpoints
-    def list_projects(self) -> list[dict[str, object]]:
+    def list_projects(self, environment: str = DEFAULT_ENVIRONMENT) -> list[dict[str, object]]:
         ensure_directories()
         projects: list[dict[str, object]] = []
         for project_dir in self.projects_dir.iterdir():
             if not project_dir.is_dir():
                 continue
             metadata = self.load_metadata(project_dir.name)
+            latest_id = self._latest_for_environment(metadata, environment)
             projects.append(
                 {
                     "project": project_dir.name,
-                    "latest": metadata.latest,
-                    "history": metadata.history,
+                    "latest": latest_id,
+                    "environment": environment,
+                    "history": self._history_for_environment(metadata, environment),
                     "retentionRuns": metadata.retention_runs,
                     "retentionDays": metadata.retention_days,
-                    "reportUrl": self._build_report_url(project_dir.name, metadata.latest),
+                    "reportUrl": self._build_report_url(project_dir.name, latest_id, environment),
                 }
             )
         return sorted(projects, key=lambda item: item["project"])
 
-    def project_overview(self) -> list[dict[str, object]]:
+    def project_overview(self, environment: str = DEFAULT_ENVIRONMENT) -> list[dict[str, object]]:
         ensure_directories()
         overview: list[dict[str, object]] = []
 
@@ -109,9 +160,10 @@ class ProjectStorageService:
                 continue
 
             metadata = self.load_metadata(project_dir.name)
+            latest_id = self._latest_for_environment(metadata, environment)
             statistics = (
-                self._load_summary_statistics(project_dir.name, metadata.latest)
-                if metadata.latest
+                self._load_summary_statistics(project_dir.name, latest_id, environment)
+                if latest_id
                 else {
                     "passed": 0,
                     "failed": 0,
@@ -125,13 +177,14 @@ class ProjectStorageService:
             overview.append(
                 {
                     "project": project_dir.name,
-                    "latest": metadata.latest,
-                    "lastRun": self._last_run_for_project(metadata),
+                    "latest": latest_id,
+                    "environment": environment,
+                    "lastRun": self._last_run_for_project(metadata, environment),
                     "status": self._derive_status(statistics),
                     "statistics": statistics,
                     "retentionRuns": metadata.retention_runs,
                     "retentionDays": metadata.retention_days,
-                    "reportUrl": self._build_report_url(project_dir.name, metadata.latest),
+                    "reportUrl": self._build_report_url(project_dir.name, latest_id, environment),
                 }
             )
 
@@ -159,23 +212,34 @@ class ProjectStorageService:
         if metadata.retention_runs is not None:
             retained = retained[: metadata.retention_runs]
 
-        removed_ids = {entry.build_id for entry in entries} - {entry.build_id for entry in retained}
-        for build_id in removed_ids:
-            target_dir = history_dir / build_id
+        retained_keys = {(entry.environment, entry.build_id) for entry in retained}
+        removed_entries = [entry for entry in entries if (entry.environment, entry.build_id) not in retained_keys]
+        for entry in removed_entries:
+            target_dir = history_dir / entry.environment / entry.build_id
+            legacy_dir = history_dir / entry.build_id
             if target_dir.exists():
                 shutil.rmtree(target_dir, ignore_errors=True)
+            elif legacy_dir.exists():
+                shutil.rmtree(legacy_dir, ignore_errors=True)
 
         latest_id = metadata.latest
         if latest_id and latest_id not in {entry.build_id for entry in retained}:
             metadata.latest = retained[0].build_id if retained else None
 
         metadata.history = retained
-        return bool(removed_ids or latest_id != metadata.latest)
+        for env, build_id in list(metadata.latest_by_environment.items()):
+            env_history = [entry for entry in retained if entry.environment == env]
+            if env_history:
+                metadata.latest_by_environment[env] = env_history[0].build_id
+            else:
+                metadata.latest_by_environment.pop(env, None)
+
+        return bool(removed_entries or latest_id != metadata.latest)
 
     # Upload handling
-    def process_upload(self, project: str, upload_content: bytes, build_id: str) -> None:
+    def process_upload(self, project: str, upload_content: bytes, build_id: str, environment: str) -> None:
         try:
-            report_dir = self._extract_upload(project, upload_content, build_id)
+            report_dir = self._extract_upload(project, upload_content, build_id, environment)
             index_path = report_dir / "index.html"
             if not index_path.exists():
                 raise HTTPException(
@@ -185,16 +249,19 @@ class ProjectStorageService:
 
             metadata = self.load_metadata(project)
             metadata.latest = build_id
-            metadata.history.append(HistoryEntry(build_id=build_id, uploaded_at=datetime.utcnow()))
+            metadata.latest_by_environment[environment] = build_id
+            metadata.history.append(
+                HistoryEntry(build_id=build_id, uploaded_at=datetime.utcnow(), environment=environment)
+            )
             self.cleanup_project_history(metadata)
             self.save_metadata(metadata)
         finally:
             # No open file handles are held, but this keeps the contract symmetrical with upload caller.
             pass
 
-    def _extract_upload(self, project: str, upload_content: bytes, build_id: str) -> Path:
+    def _extract_upload(self, project: str, upload_content: bytes, build_id: str, environment: str) -> Path:
         project_dir = self.projects_dir / project
-        history_dir = project_dir / "history"
+        history_dir = project_dir / "history" / environment
         history_dir.mkdir(parents=True, exist_ok=True)
 
         target_dir = history_dir / build_id
@@ -225,12 +292,17 @@ class ProjectStorageService:
             pass
         raise HTTPException(status_code=404, detail="File not found")
 
-    def get_report_path(self, project: str, path: str) -> Path:
+    def get_report_path(self, project: str, path: str, environment: str) -> Path:
         metadata = self.load_metadata(project)
-        if metadata.latest is None:
+        latest_id = self._latest_for_environment(metadata, environment)
+        if latest_id is None:
             raise HTTPException(status_code=404, detail="Project not found or no report uploaded.")
 
-        report_dir = self.projects_dir / project / "history" / metadata.latest
+        report_dir = self.projects_dir / project / "history" / environment / latest_id
+        legacy_report_dir = self.projects_dir / project / "history" / latest_id
+        if not report_dir.exists() and legacy_report_dir.exists():
+            report_dir = legacy_report_dir
+
         if not report_dir.exists():
             raise HTTPException(status_code=404, detail="Report not found.")
 
@@ -265,25 +337,27 @@ class ProjectStorageService:
         )
 
     # Details endpoints
-    def project_details(self, project: str) -> dict[str, object]:
+    def project_details(self, project: str, environment: str = DEFAULT_ENVIRONMENT) -> dict[str, object]:
         metadata = self.load_metadata(project)
-        if metadata.latest is None:
+        latest_id = self._latest_for_environment(metadata, environment)
+        if latest_id is None:
             raise HTTPException(status_code=404, detail="Project has no uploaded reports yet.")
 
         return {
             "project": project,
-            "latest": metadata.latest,
-            "history": metadata.history,
+            "latest": latest_id,
+            "environment": environment,
+            "history": self._history_for_environment(metadata, environment),
             "retentionRuns": metadata.retention_runs,
             "retentionDays": metadata.retention_days,
-            "reportUrl": self._build_report_url(project, metadata.latest),
+            "reportUrl": self._build_report_url(project, latest_id, environment),
         }
 
     # Utility
     @staticmethod
-    def _build_report_url(project: str, latest: str | None) -> str | None:
+    def _build_report_url(project: str, latest: str | None, environment: str) -> str | None:
         if latest:
-            return f"/api/projects/{project}/report/index.html"
+            return f"/api/projects/{project}/report/index.html?environment={environment}"
         return None
 
     @staticmethod

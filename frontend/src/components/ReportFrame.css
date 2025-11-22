@@ -20,6 +20,10 @@
   margin: 0.15rem 0 0;
 }
 
+.report-frame__header .tag {
+  margin-top: 0.4rem;
+}
+
 .report-frame iframe {
   flex: 1;
   width: 100%;

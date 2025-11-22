@@ -13,6 +13,13 @@
   color: #6b7280;
 }
 
+.project-list__env {
+  width: fit-content;
+  margin-top: 0.35rem;
+  background: #ecfdf3;
+  color: #166534;
+}
+
 .project-list ul {
   list-style: none;
   padding: 0;

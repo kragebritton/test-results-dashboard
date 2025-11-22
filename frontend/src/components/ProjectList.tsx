@@ -1,17 +1,19 @@
-import type { ProjectSummary } from '../types'
+import type { Environment, ProjectSummary } from '../types'
 import './ProjectList.css'
 
 type Props = {
   projects: ProjectSummary[]
   selected: string
   statusMessage: string | null
+  environment: Environment
   onSelect: (project: string) => void
 }
 
-export function ProjectList({ projects, selected, statusMessage, onSelect }: Props) {
+export function ProjectList({ projects, selected, statusMessage, environment, onSelect }: Props) {
   if (statusMessage) {
     return (
       <div className="project-list project-list--empty">
+        <span className="tag project-list__env">Environment: {environment.toUpperCase()}</span>
         <p>{statusMessage}</p>
       </div>
     )
@@ -22,6 +24,7 @@ export function ProjectList({ projects, selected, statusMessage, onSelect }: Pro
       <div className="project-list__header">
         <h3>Projects</h3>
         <p className="muted">Latest Allure report per project</p>
+        <span className="tag project-list__env">Environment: {environment.toUpperCase()}</span>
       </div>
       <ul>
         {projects.map((project) => (
