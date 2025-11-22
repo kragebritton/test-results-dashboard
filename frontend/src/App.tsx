@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchProjectOverview, fetchProjects } from './api'
 import { ProjectList } from './components/ProjectList'
+import { ProjectTable } from './components/ProjectTable'
 import { ReportFrame } from './components/ReportFrame'
 import { SummaryGrid } from './components/SummaryGrid'
 import type { Environment, ProjectOverview, ProjectSummary } from './types'
@@ -515,6 +516,11 @@ function App() {
             </div>
 
             <SummaryGrid overview={overview} statusMessage={overviewMessage} environment={environment} />
+            <ProjectTable
+              overview={overview}
+              statusMessage={overviewMessage}
+              environment={environment}
+            />
           </section>
         ) : (
           <>
