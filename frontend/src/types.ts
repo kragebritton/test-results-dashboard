@@ -14,8 +14,11 @@ export type ProjectOverview = {
   project: string
   latest: string | null
   environment: Environment
+  branch?: string
   lastRun: string | null
   status: 'passed' | 'failed' | 'unknown'
+  durationMs?: number
+  duration?: number
   statistics: {
     passed: number
     failed: number
