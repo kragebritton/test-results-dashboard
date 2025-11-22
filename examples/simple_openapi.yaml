@@ -1,0 +1,42 @@
+openapi: 3.0.3
+title: Example Pets API
+info:
+  version: "1.0.0"
+  title: Example Pets API
+paths:
+  /pets:
+    get:
+      summary: List pets
+      operationId: listPets
+      responses:
+        "200":
+          description: A paged array of pets
+    post:
+      summary: Create a pet
+      operationId: createPet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+              required:
+                - name
+      responses:
+        "201":
+          description: Pet created
+  /pets/{petId}:
+    get:
+      summary: Info for a specific pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Expected response to a valid request
